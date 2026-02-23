@@ -1,2 +1,5 @@
 FileName, CommitSha
+AnalyticsRules/DGA-Detected-DnsEvents-1.json,7146cb9409b0ecbb6ba999b3ccc17d74f67f8206
+AnalyticsRules/DGA-Anomaly-ASIM.json,9e01712da28f848914b1b9e32e93c1dc88a475ab
+AnalyticsRules/DGA-Static-Threshold-ASIM.json,68e217406476f0f836dd4c252d82b78e775266af
 
