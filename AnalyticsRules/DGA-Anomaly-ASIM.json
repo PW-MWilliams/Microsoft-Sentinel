@@ -1,0 +1,34 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "workspace": {
+            "type": "string"
+        }
+    },
+    "resources": [
+        {
+            "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+            "apiVersion": "2023-02-01",
+            "name": "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/','a07ebfcb-f7f8-44ea-a40c-38b24855a8f4')]",
+            "kind": "Scheduled",
+            "properties": {
+                "displayName": "Potential DGA(Domain Generation Algorithm) detected via Repetitive Failures - Anomaly based (ASIM DNS Solution)",
+                "description": "This rule makes use of the series decompose anomaly method to detect clients with a high NXDomain response count, which could be indicative of a DGA (cycling through possible C2 domains where most C2s are not live). An alert is generated when new IP address DNS activity is identified as an outlier when compared to the baseline, indicating a recurring pattern. It utilizes [ASIM](https://aka.ms/AboutASIM) normalization and is applied to any source that supports the ASIM DNS schema.\n\n[Tuned 2026-02-23] Added exclusions for Azure internal DNS (reddog.microsoft.com), reverse DNS (in-addr.arpa), and internal AD domain (pws.local) to reduce false positives.",
+                "severity": "Medium",
+                "enabled": true,
+                "query": "let threshold = 2.5;\nlet min_t = ago(14d);\nlet max_t = now();\nlet timeframe = 1d;\n// === PWS False-Positive Exclusions (added 2026-02-23) ===\n// Exclude Azure internal DNS, reverse DNS, and internal AD domain\nlet defined_exclusions = dynamic([\"reddog.microsoft.com.\", \".in-addr.arpa.\", \".pws.local.\"]);\n// calculate avg. eps(events per second)\nlet eps = materialize (_Im_Dns\n  | project TimeGenerated\n  | where TimeGenerated > ago(5m)\n  | count\n  | extend Count = Count / 300);\nlet maxSummarizedTime = toscalar (\n  union isfuzzy=true \n      (\n      DNS_Summarized_Logs_ip_CL \n      | where EventTime_t >= min_t\n      | summarize max_TimeGenerated=max(EventTime_t)\n      | extend max_TimeGenerated = datetime_add('hour', 1, max_TimeGenerated)\n      ),\n      (\n      print(min_t)\n      | project max_TimeGenerated = print_0\n      )\n  | summarize maxTimeGenerated = max(max_TimeGenerated) \n  );\nlet summarizationexist = materialize(\n  union isfuzzy=true \n      (\n      DNS_Summarized_Logs_ip_CL\n      | where EventTime_t > ago(1d) \n      | project v = int(2)\n      ),\n      (\n      print int(1) \n      | project v = print_0\n      )\n  | summarize maxv = max(v)\n  | extend sumexist = (maxv > 1)\n  );\nlet allData = union isfuzzy=true\n      (\n      (datatable(exists: int, sumexist: bool)[1, false]\n      | where toscalar(eps) > 1000\n      | join (summarizationexist) on sumexist)\n      | join (\n          _Im_Dns(responsecodename='NXDOMAIN', starttime=todatetime(ago(2d)), endtime=now())\n          | where TimeGenerated > maxSummarizedTime\n          | where not(DnsQuery has_any (defined_exclusions))\n          | summarize Count=count() by SrcIpAddr, DnsQuery, bin(TimeGenerated, 1h)\n          | extend EventTime = TimeGenerated, Count = toint(Count), exists=int(1)\n          )\n          on exists\n      | project-away exists, maxv, sum*\n      ),\n      (\n      (datatable(exists: int, sumexist: bool)[1, false]\n      | where toscalar(eps) between (501 .. 1000)\n      | join (summarizationexist) on sumexist)\n      | join (\n          _Im_Dns(responsecodename='NXDOMAIN', starttime=todatetime(ago(3d)), endtime=now())\n          | where TimeGenerated > maxSummarizedTime\n          | where not(DnsQuery has_any (defined_exclusions))\n          | summarize Count=count() by SrcIpAddr, DnsQuery, bin(TimeGenerated, 1h)\n          | extend EventTime = TimeGenerated, Count = toint(Count), exists=int(1)\n          )\n          on exists\n      | project-away exists, maxv, sum*\n      ),\n      (\n      (datatable(exists: int, sumexist: bool)[1, false]\n      | where toscalar(eps) <= 500\n      | join (summarizationexist) on sumexist)\n      | join (\n          _Im_Dns(responsecodename='NXDOMAIN', starttime=todatetime(ago(4d)), endtime=now())\n          | where TimeGenerated > maxSummarizedTime\n          | where not(DnsQuery has_any (defined_exclusions))\n          | summarize Count=count() by SrcIpAddr, DnsQuery, bin(TimeGenerated, 1h)\n          | extend EventTime = TimeGenerated, Count = toint(Count), exists=int(1)\n          )\n          on exists\n      | project-away exists, maxv, sum*\n      ),\n      (\n      DNS_Summarized_Logs_ip_CL\n      | where EventTime_t > min_t and EventResultDetails_s == 'NXDOMAIN'\n      | where not(DnsQuery_s has_any (defined_exclusions))\n      | project-rename\n          SrcIpAddr=SrcIpAddr_s,\n          DnsQuery=DnsQuery_s,\n          Count=count__d,\n          EventTime=EventTime_t\n      | extend Count = toint(Count)\n      );\nallData\n| make-series QueryCount=dcount(DnsQuery) on EventTime from min_t to max_t step timeframe by SrcIpAddr\n// include calculated Anomalies, Score and Baseline\n| extend (anomalies, score, baseline) = series_decompose_anomalies(QueryCount, threshold, -1, 'linefit')\n| mv-expand anomalies, score, baseline, EventTime, QueryCount\n| extend\n  anomalies = toint(anomalies),\n  score = toint(score),\n  baseline = toint(baseline),\n  EventTime = todatetime(EventTime),\n  Total = tolong(QueryCount)\n| where EventTime >= ago(timeframe)\n| where score >= threshold * 2\n// Join allData to include DnsQuery details\n| join kind=inner(allData\n  | where TimeGenerated >= ago(timeframe)\n  | summarize DNSQueries = make_set(DnsQuery, 1000) by SrcIpAddr)\n  on SrcIpAddr\n| project-away SrcIpAddr1\n",
+                "queryFrequency": "P1D",
+                "queryPeriod": "P14D",
+                "triggerOperator": "GreaterThan",
+                "triggerThreshold": 0,
+                "suppressionDuration": "PT1H",
+                "suppressionEnabled": false,
+                "tactics": [
+                    "CommandAndControl"
+                ],
+                "alertRuleTemplateName": "01191239-274e-43c9-b154-3a042692af06"
+            }
+        }
+    ]
+}
